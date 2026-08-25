@@ -192,7 +192,6 @@ SMEXT_LINK(&g_Interface);
 
 ConVar *g_SvForceCTSpawn = CreateConVar("sv_cssfixes_force_ct_spawnpoints", "1", FCVAR_NOTIFY, "Forces all spawnpoints to be on CT side");
 ConVar *g_SvSkipCashReset = CreateConVar("sv_cssfixes_skip_cash_reset", "1", FCVAR_NOTIFY, "Skip reset cash to 16000 when buying an item");
-ConVar *g_SvGameEndUnFreeze = CreateConVar("sv_cssfixes_gameend_unfreeze", "1", FCVAR_NOTIFY, "Allow people to run around freely after game end");
 ConVar *g_SvAlwaysTransmitPointViewControl = CreateConVar("sv_cssfixes_always_transmit_point_viewcontrol", "0", FCVAR_NOTIFY, "Always transmit point_viewcontrol for debugging purposes");
 ConVar *g_SvLogs = CreateConVar("sv_cssfixes_logs", "0", FCVAR_NOTIFY, "Add extra logs of action performed");
 
@@ -785,22 +784,44 @@ bool CSSFixes::SDK_OnLoad(char *error, size_t maxlength, bool late)
 			(unsigned char *)"\x90\x90\x90\x90\x90\x90\x83\xFA\xFF",
 			"cstrike/bin/server_srv.so"
 		},
-		// 14: CGameMovement::LadderMove NOP out player->SetGravity( 0 );
-		// This is in a cloned function which has a weird symbol (_ZN13CGameMovement10LadderMoveEv_part_0) so I went with the function right before it
+		// 14: bool CZipPackFile::Prepare( int64 fileLen, int64 nFileOfs )
+		//NOPs out lookup.m_hFileName = m_fs->FindOrAddFileName( tmpString ); Line 768
+		//stop the errors CUtlLinkedList overflow! (exhausted memory allocator) and CUtlLinkedList overflow! (exhausted index range)
+		//this avoids crashing due to loading over 65k strings into stringpool. Custom assets in maps lead towards the limit. jenz- December 2023
 		{
-			"_ZN13CGameMovement12CheckFallingEv",
-			(unsigned char *)"\xC7\x80\xA4\x02\x00\x00\x00\x00\x00\x00\x8B\x03\x8B\x80",
-			"xx????????xxxx",
-			(unsigned char *)"\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x8B\x03\x8B\x80",
+			"_ZN12CZipPackFile7PrepareExx",
+			(unsigned char *)"\x8B\x10\x57\x50\xFF\x92\x8C\x00\x00\x00",
+			"xxxxxxxxxx",
+			(unsigned char *)"\x8B\x10\x57\x50\x31\xC0\x90\x90\x90\x90",
+			"bin/dedicated_srv.so",
+			0x600
+		},
+		// 15: void CBaseGrenade::Explode( trace_t *pTrace, int bitsDamageType ) NOP out UTIL_DecalTrace( pTrace, "Scorch" ); to stop grenades from causing
+		// "Too many indices for index buffer. Tell a programmer". Grenades cause decals on too many faces for the client to handle.
+		{
+			"_ZN12CBaseGrenade7ExplodeEP10CGameTracei",
+			(unsigned char *)"\xE8\xEA\x84\x21\x00",
+			"xxxxx",
+			(unsigned char *)"\x90\x90\x90\x90\x90",
 			"cstrike/bin/server_srv.so"
 		},
-		// 18: Remove weird filename handle check in CZipPackFile::GetFileInfo that broke loading mixed case files in bsp pakfiles
+		// 16: void CPlantedC4::Explode( trace_t *pTrace, int bitsDamageType ) NOP out UTIL_DecalTrace( pTrace, "Scorch" ); same reason as 17.
 		{
-			"_ZN12CZipPackFile11GetFileInfoEPKcRiRxS2_S2_Rt",
-			(unsigned char *)"\x75\x00\x8B\x09",
-			"x?xx",
-			(unsigned char *)"\x90\x90\x8B\x09",
-			"bin/dedicated_srv.so"
+			"_ZN10CPlantedC47ExplodeEP10CGameTracei",
+			(unsigned char *)"\xE8\x82\xC6\xEB\xFF",
+			"xxxxx",
+			(unsigned char *)"\x90\x90\x90\x90\x90",
+			"cstrike/bin/server_srv.so"
+		},
+		// 17: void CEnvExplosion::InputExplode( inputdata_t &inputdata ) NOP out UTIL_DecalTrace( &tr, "Scorch" ); same reason as 17.
+		{
+			"_ZN13CEnvExplosion12InputExplodeER11inputdata_t",
+			(unsigned char *)"\xE8\x8A\x26\x1A\x00",
+			"xxxxx",
+			(unsigned char *)"\x90\x90\x90\x90\x90",
+			"cstrike/bin/server_srv.so",
+			0x800,
+			1
 		}
 	};
 
@@ -837,27 +858,6 @@ bool CSSFixes::SDK_OnLoad(char *error, size_t maxlength, bool late)
 			(unsigned char *)"\x3D\x80\x3E\x00\x00\x0F\x8F\x00\x00\x00\x00\x8D\x65",
 			"x????xx????xx",
 			(unsigned char *)"\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x8D\x65",
-			"cstrike/bin/server_srv.so"
-		});
-	}
-
-	if (g_SvGameEndUnFreeze->GetInt())
-	{
-		gs_Patches.push_back({
-			// 16: allow people to run around freely after game end, by overwriting pPlayer->AddFlag( FL_FROZEN ); line 3337 in cs_gamerules.cpp
-			// this change is desired for the new mapvoting feature so that people can still freely move at the end of the map while the vote is running.
-			"_ZN12CCSGameRules16GoToIntermissionEv",
-			(unsigned char *)"\x74\x0E\x83\xEC\x08\x6A\x40\x50",
-			"xxxxxxxx",
-			(unsigned char *)"\xEB\x0E\x83\xEC\x08\x6A\x40\x50",
-			"cstrike/bin/server_srv.so"
-		});
-		gs_Patches.push_back({
-			//17 also jump over boolean = true // freeze players while in intermission		m_bFreezePeriod = true;
-			"_ZN12CCSGameRules16GoToIntermissionEv",
-			(unsigned char *)"\x75\x0F\xE8\x69\xCE\xDA\xFF\x8B\x45\x08",
-			"xxxxxxxxxx",
-			(unsigned char *)"\xEB\x0F\xE8\x69\xCE\xDA\xFF\x8B\x45\x08",
 			"cstrike/bin/server_srv.so"
 		});
 	}
